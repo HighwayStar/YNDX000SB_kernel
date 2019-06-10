@@ -753,6 +753,7 @@
 #define SW_HPHR_OVERCURRENT	0x10  /* set = over current on right hph */
 #define SW_MICROPHONE2_INSERT   0x11  /* set = inserted */
 #define SW_UNSUPPORT_INSERT	0x12  /* set = unsupported device inserted */
+#define SW_SAR_SENSOR		0x13  /* set = sar near */
 #define SW_MAX			0x20
 #define SW_CNT			(SW_MAX+1)
 
