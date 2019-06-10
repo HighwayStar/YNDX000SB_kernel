@@ -496,7 +496,11 @@ int mdss_dsi_panel_reset(struct mdss_panel_data *pdata, int enable)
 			gpio_set_value((ctrl_pdata->disp_en_gpio), 0);
 			gpio_free(ctrl_pdata->disp_en_gpio);
 		}
+#if 1
+		gpio_set_value((ctrl_pdata->rst_gpio), 1);
+#else
 		gpio_set_value((ctrl_pdata->rst_gpio), 0);
+#endif
 		gpio_free(ctrl_pdata->rst_gpio);
 		if (gpio_is_valid(ctrl_pdata->lcd_mode_sel_gpio)) {
 			gpio_set_value(ctrl_pdata->lcd_mode_sel_gpio, 0);
@@ -1797,11 +1801,37 @@ static bool mdss_dsi_cmp_panel_reg_v2(struct mdss_dsi_ctrl_pdata *ctrl)
 	int i, j = 0;
 	int len = 0, *lenp;
 	int group = 0;
-
+	//int lcm_id;
+	int lcm_id_voltage = lcm_id_pin;
 	lenp = ctrl->status_valid_params ?: ctrl->status_cmds_rlen;
-
+#if 0
+	gpio_request(68, "lcm_id");
+	gpio_direction_input(68);
+	lcm_id = gpio_get_value(68);
+#endif
 	for (i = 0; i < ctrl->status_cmds.cmd_cnt; i++)
 		len += lenp[i];
+	if(lcm_id_voltage ==0)
+	{
+
+	for (j = 0; j < ctrl->groups; ++j)
+	{
+		for (i = 0; i < len; ++i)
+		{
+			printk("lcd esd return_buf[%d] = 0x%x  status_value = 0x%x %s %d\n", i, ctrl->return_buf[i], ctrl->status_value[group + i],  __func__, __LINE__);
+			printk("lcd esd return_buf_2[%d] = 0x%x  status_value_2 = 0x%x %s %d\n", i, ctrl->return_buf_2[i], ctrl->status_value_2[group + i],  __func__, __LINE__);
+			if (ctrl->return_buf[i] != ctrl->status_value[group + i] ||ctrl->return_buf_2[i] != ctrl->status_value_2[group + i] )
+				break;
+		}
+		if (i == len)
+			return true;
+		group += len;
+	}
+	}
+	else
+	{
+	   printk("no check LCM ESD\n");
+	}
 
 	for (j = 0; j < ctrl->groups; ++j) {
 		for (i = 0; i < len; ++i) {
@@ -2068,6 +2098,10 @@ static void mdss_dsi_parse_esd_params(struct device_node *np,
 			"qcom,mdss-dsi-panel-status-command",
 				"qcom,mdss-dsi-panel-status-command-state");
 
+		mdss_dsi_parse_dcs_cmds(np, &ctrl->status_cmds_2,
+			"qcom,mdss-dsi-panel-status-command-2",
+				"qcom,mdss-dsi-panel-status-command-state");
+
 	rc = of_property_read_u32(np, "qcom,mdss-dsi-panel-max-error-count",
 		&tmp);
 	ctrl->max_status_error_count = (!rc ? tmp : 0);
@@ -2100,6 +2134,16 @@ static void mdss_dsi_parse_esd_params(struct device_node *np,
 		goto error1;
 	}
 
+	#if 1
+	data = of_find_property(np, "qcom,mdss-dsi-panel-status-value-2", &tmp);
+	tmp /= sizeof(u32);
+	if (!IS_ERR_OR_NULL(data) && tmp != 0 && (tmp % status_len) == 0) {
+		ctrl->groups_2 = tmp / status_len;
+	} else {
+		goto error1;
+	}
+      #endif
+
 	ctrl->status_value = kzalloc(sizeof(u32) * status_len * ctrl->groups,
 				GFP_KERNEL);
 	if (!ctrl->status_value)
@@ -2108,6 +2152,15 @@ static void mdss_dsi_parse_esd_params(struct device_node *np,
 	ctrl->return_buf = kcalloc(status_len * ctrl->groups,
 			sizeof(unsigned char), GFP_KERNEL);
 	if (!ctrl->return_buf)
+		goto error2;
+        ctrl->status_value_2 = kzalloc(sizeof(u32) * status_len * ctrl->groups,
+				GFP_KERNEL);
+	if (!ctrl->status_value_2)
+		goto error1;
+
+	ctrl->return_buf_2 = kcalloc(status_len * ctrl->groups,
+			sizeof(unsigned char), GFP_KERNEL);
+	if (!ctrl->return_buf_2)
 		goto error2;
 
 	rc = of_property_read_u32_array(np,
@@ -2119,6 +2172,15 @@ static void mdss_dsi_parse_esd_params(struct device_node *np,
 		memset(ctrl->status_value, 0, ctrl->groups * status_len);
 	}
 
+	rc = of_property_read_u32_array(np,
+		"qcom,mdss-dsi-panel-status-value-2",
+		ctrl->status_value_2, 1);
+
+	if (rc) {
+		pr_debug("%s: Error reading panel status values-2\n",
+				__func__);
+		memset(ctrl->status_value_2, 0, ctrl->groups * status_len);
+	}
 	return;
 
 error2:

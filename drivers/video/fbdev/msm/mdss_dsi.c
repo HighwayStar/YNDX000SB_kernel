@@ -34,6 +34,16 @@
 #include "mdss_debug.h"
 #include "mdss_dsi_phy.h"
 #include "mdss_dba_utils.h"
+#include "../../../input/touchscreen/hxchipset/himax_common.h"
+extern struct himax_ts_data *private_ts;
+
+#include <linux/proc_fs.h>
+extern void seq_printf(struct seq_file *m, const char *f, ...);
+extern int single_open(struct file *, int (*)(struct seq_file *, void *), void *);
+extern ssize_t seq_read(struct file *, char __user *, size_t, loff_t *);
+extern loff_t seq_lseek(struct file *, loff_t, int);
+extern int single_release(struct inode *, struct file *);
+int lcm_id_pin = 0;
 
 #define CMDLINE_DSI_CTL_NUM_STRING_LEN 2
 
@@ -409,7 +419,11 @@ static int mdss_dsi_panel_power_on(struct mdss_panel_data *pdata)
 
 	ctrl_pdata = container_of(pdata, struct mdss_dsi_ctrl_pdata,
 				panel_data);
-
+if(!pdata->panel_info.cont_splash_enabled){
+		gpio_set_value((ctrl_pdata->rst_gpio), 0);
+		gpio_free(ctrl_pdata->rst_gpio);
+		mdelay(2);
+}
 	ret = msm_dss_enable_vreg(
 		ctrl_pdata->panel_power_data.vreg_config,
 		ctrl_pdata->panel_power_data.num_vreg, 1);
@@ -425,6 +439,7 @@ static int mdss_dsi_panel_power_on(struct mdss_panel_data *pdata)
 	 * bootloader. This needs to be done irresepective of whether
 	 * the lp11_init flag is set or not.
 	 */
+
 	if (pdata->panel_info.cont_splash_enabled ||
 		!pdata->panel_info.mipi.lp11_init) {
 		if (mdss_dsi_pinctrl_set_state(ctrl_pdata, true))
@@ -478,7 +493,9 @@ static int mdss_dsi_panel_power_ctrl(struct mdss_panel_data *pdata,
 		/* if LCD has not been disabled, then disable it now */
 		if ((pinfo->panel_power_state != MDSS_PANEL_POWER_LCD_DISABLED)
 		     && (pinfo->panel_power_state != MDSS_PANEL_POWER_OFF))
+#if 0
 			ret = mdss_dsi_panel_power_off(pdata);
+#endif
 		break;
 	case MDSS_PANEL_POWER_ON:
 		if (mdss_dsi_is_panel_on_lp(pdata))
@@ -1779,6 +1796,9 @@ static int mdss_dsi_blank(struct mdss_panel_data *pdata, int power_state)
 	if (ctrl_pdata->ctrl_state & CTRL_STATE_PANEL_INIT) {
 		if (!pdata->panel_info.dynamic_switch_pending) {
 			ATRACE_BEGIN("dsi_panel_off");
+			himax_int_enable(private_ts->client->irq,0);
+			//printk("AllenYu-check irq error\n");
+			mdss_dsi_panel_power_off(pdata);
 			ret = ctrl_pdata->off(pdata);
 			if (ret) {
 				pr_err("%s: Panel OFF failed\n", __func__);
@@ -3541,6 +3561,32 @@ error:
 	return rc;
 }
 
+static int proc_lcm_vendor_show(struct seq_file *m, void *v)
+{
+	int lcm_id_voltage = lcm_id_pin;
+	if(lcm_id_voltage ==0)
+	{
+		seq_printf(m, "Truly , HX83112-A\n");
+	}
+	else
+	{
+		seq_printf(m, "DJN , HX83112-B\n");
+	}
+
+	return 0;
+}
+static int proc_lcm_vendor_open(struct inode *inode, struct file *file)
+{
+    return single_open(file, proc_lcm_vendor_show, NULL);
+}
+
+static const struct file_operations proc_lcm_vendor_fops = {
+    .open  = proc_lcm_vendor_open,
+    .read = seq_read,
+    .llseek = seq_lseek,
+    .release = single_release,
+};
+
 static int mdss_dsi_ctrl_probe(struct platform_device *pdev)
 {
 	int rc = 0;
@@ -3727,6 +3773,7 @@ static int mdss_dsi_ctrl_probe(struct platform_device *pdev)
 		ctrl_pdata->shared_data->dsi1_active = true;
 
 	mdss_dsi_debug_bus_init(mdss_dsi_res);
+	proc_create("lcm_vendor", 0, NULL, &proc_lcm_vendor_fops);
 
 	return 0;
 
@@ -4559,6 +4606,12 @@ static int mdss_dsi_parse_gpio_params(struct platform_device *ctrl_pdev,
 		pr_err("%s:%d, reset gpio not specified\n",
 						__func__, __LINE__);
 
+	ctrl_pdata->lcm_id = of_get_named_gpio(ctrl_pdev->dev.of_node,
+			 "qcom,platform-lcm-id-gpio", 0);
+	if (!gpio_is_valid(ctrl_pdata->lcm_id))
+		pr_err("%s:%d, lcm id gpio not specified\n",
+						__func__, __LINE__);
+
 	ctrl_pdata->lcd_mode_sel_gpio = of_get_named_gpio(
 			ctrl_pdev->dev.of_node, "qcom,panel-mode-gpio", 0);
 	if (!gpio_is_valid(ctrl_pdata->lcd_mode_sel_gpio)) {
@@ -4670,6 +4723,9 @@ int dsi_panel_device_register(struct platform_device *ctrl_pdev,
 						__func__, rc);
 		return rc;
 	}
+	gpio_request(ctrl_pdata->lcm_id, "lcm_id");
+	gpio_direction_input(ctrl_pdata->lcm_id);
+	lcm_id_pin = gpio_get_value(ctrl_pdata->lcm_id);
 
 	if (mdss_dsi_retrieve_ctrl_resources(ctrl_pdev,
 					     pinfo->pdest,

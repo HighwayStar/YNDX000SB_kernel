@@ -126,6 +126,7 @@ void mdss_dsi_ctrl_init(struct device *ctrl_dev,
 	mdss_dsi_buf_alloc(ctrl_dev, &ctrl->tx_buf, SZ_4K);
 	mdss_dsi_buf_alloc(ctrl_dev, &ctrl->rx_buf, SZ_4K);
 	mdss_dsi_buf_alloc(ctrl_dev, &ctrl->status_buf, SZ_4K);
+	mdss_dsi_buf_alloc(ctrl_dev, &ctrl->status_buf_2, SZ_4K);
 	ctrl->cmdlist_commit = mdss_dsi_cmdlist_commit;
 	ctrl->err_cont.err_time_delta = 100;
 	ctrl->err_cont.max_err_index = MAX_ERR_INDEX;
@@ -1136,6 +1137,8 @@ static int mdss_dsi_read_status(struct mdss_dsi_ctrl_pdata *ctrl)
 	int i, rc, *lenp;
 	int start = 0;
 	struct dcs_cmd_req cmdreq;
+	int start_2 = 0;
+       struct dcs_cmd_req cmdreq_2;
 
 	rc = 1;
 	lenp = ctrl->status_valid_params ?: ctrl->status_cmds_rlen;
@@ -1170,6 +1173,32 @@ static int mdss_dsi_read_status(struct mdss_dsi_ctrl_pdata *ctrl)
 		memcpy(ctrl->return_buf + start,
 			ctrl->status_buf.data, lenp[i]);
 		start += lenp[i];
+	}
+
+	for (i = 0; i < ctrl->status_cmds_2.cmd_cnt; ++i) {
+		memset(&cmdreq_2, 0, sizeof(cmdreq_2));
+		cmdreq_2.cmds = ctrl->status_cmds_2.cmds + i;
+		cmdreq_2.cmds_cnt = 1;
+		cmdreq_2.flags = CMD_REQ_COMMIT | CMD_CLK_CTRL | CMD_REQ_RX;
+		cmdreq_2.rlen = ctrl->status_cmds_rlen[i];
+		cmdreq_2.cb = NULL;
+		cmdreq_2.rbuf = ctrl->status_buf_2.data;
+
+		if (ctrl->status_cmds_2.link_state == DSI_LP_MODE)
+			cmdreq_2.flags  |= CMD_REQ_LP_MODE;
+		else if (ctrl->status_cmds_2.link_state == DSI_HS_MODE)
+			cmdreq_2.flags |= CMD_REQ_HS_MODE;
+
+		rc = mdss_dsi_cmdlist_put(ctrl, &cmdreq_2);
+		if (rc <= 0) {
+			if (!mdss_dsi_sync_wait_enable(ctrl) ||
+				mdss_dsi_sync_wait_trigger(ctrl))
+			pr_err("%s: get status: fail\n", __func__);
+			return rc;
+		}
+		memcpy(ctrl->return_buf_2 + start_2,
+			ctrl->status_buf_2.data, lenp[i]);
+		start_2 += lenp[i];
 	}
 
 	return rc;
@@ -2143,6 +2172,7 @@ skip_max_pkt_size:
 		rp->read_cnt = 0;
 	case DTYPE_GEN_READ1_RESP:
 	case DTYPE_DCS_READ1_RESP:
+        case DTYPE_0x0A:
 		mdss_dsi_short_read1_resp(rp);
 		break;
 	case DTYPE_GEN_READ2_RESP:

@@ -239,7 +239,7 @@ enum dsi_pm_type {
 #define DSI_DYNAMIC_REFRESH_PLL_DELAY		0x20C
 
 #define MAX_ERR_INDEX			10
-
+extern int lcm_id_pin;
 extern struct device dsi_dev;
 extern u32 dsi_irq;
 extern struct mdss_dsi_ctrl_pdata *ctrl_list[];
@@ -451,6 +451,7 @@ struct mdss_dsi_ctrl_pdata {
 	int irq_cnt;
 	int disp_te_gpio;
 	int rst_gpio;
+	int lcm_id;
 	int disp_en_gpio;
 	int bklt_en_gpio;
 	bool bklt_en_gpio_invert;
@@ -500,6 +501,10 @@ struct mdss_dsi_ctrl_pdata {
 	struct dsi_panel_cmds lp_on_cmds;
 	struct dsi_panel_cmds lp_off_cmds;
 	struct dsi_panel_cmds status_cmds;
+	struct dsi_panel_cmds status_cmds_2;
+	u32 *status_value_2;
+	unsigned char *return_buf_2;
+	u32 groups_2;
 	u32 *status_valid_params;
 	u32 *status_cmds_rlen;
 	u32 *status_value;
@@ -550,6 +555,7 @@ struct mdss_dsi_ctrl_pdata {
 	struct dsi_buf tx_buf;
 	struct dsi_buf rx_buf;
 	struct dsi_buf status_buf;
+	struct dsi_buf status_buf_2;
 	int status_mode;
 	int rx_len;
 	int cur_max_pkt_size;

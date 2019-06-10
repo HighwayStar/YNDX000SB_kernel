@@ -80,6 +80,7 @@ struct dsi_buf {
 #define DTYPE_DCS_LREAD_RESP    0x1c
 #define DTYPE_DCS_READ1_RESP    0x21    /* 1 parameter, short */
 #define DTYPE_DCS_READ2_RESP    0x22    /* 2 parameter, short */
+#define DTYPE_0x0A 0x0a
 
 struct dsi_ctrl_hdr {
 	char dtype;	/* data type */
