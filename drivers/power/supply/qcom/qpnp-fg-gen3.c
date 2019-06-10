@@ -2138,6 +2138,9 @@ static int fg_adjust_recharge_soc(struct fg_chip *chip)
 static int fg_adjust_recharge_voltage(struct fg_chip *chip)
 {
 	int rc, recharge_volt_mv;
+	int max_volt_mv;
+	union power_supply_propval prop = {0, };
+	struct power_supply *main_psy;
 
 	if (chip->dt.auto_recharge_soc)
 		return 0;
@@ -2148,10 +2151,40 @@ static int fg_adjust_recharge_voltage(struct fg_chip *chip)
 	recharge_volt_mv = chip->dt.recharge_volt_thr_mv;
 
 	/* Lower the recharge voltage in soft JEITA */
+#if 1
+	rc = power_supply_get_property(chip->batt_psy, POWER_SUPPLY_PROP_IS_CALL_STATE, &prop);
+	if (rc < 0) {
+		pr_err("Error in reading call_status from batt_psy, rc=%d\n", rc);
+	} else {
+		chip->call_status = prop.intval;
+	}
+
+	main_psy = power_supply_get_by_name("main");
+	if (!main_psy) {
+		pr_err("main psy not found\n");
+	} else {
+		rc = power_supply_get_property(main_psy, POWER_SUPPLY_PROP_VOLTAGE_MAX, &prop);
+		if (rc < 0) {
+			pr_err("Error in reading voltage_max from main_psy, rc=%d\n", rc);
+		} else {
+			max_volt_mv = prop.intval / 1000;
+		}
+	}
+
+	pr_debug("[B]%s(%d): max_volt_mv=%d, recharge_volt_mv=%d, chip->call_status=%d, chip->health=%d\n", __func__, __LINE__, max_volt_mv, recharge_volt_mv, chip->call_status, chip->health);
+	if (chip->call_status == 1) {
+		if (max_volt_mv <= 4000) {
+			recharge_volt_mv -= 370; //3.95V
+		}
+	} else if (chip->health == POWER_SUPPLY_HEALTH_WARM) {
+		recharge_volt_mv -= 270; //4.05V
+	}
+	pr_debug("[B]%s(%d): max_volt_mv=%d, recharge_volt_mv=%d, chip->call_status=%d, chip->health=%d\n", __func__, __LINE__, max_volt_mv, recharge_volt_mv, chip->call_status, chip->health);
+#else
 	if (chip->health == POWER_SUPPLY_HEALTH_WARM ||
 			chip->health == POWER_SUPPLY_HEALTH_COOL)
 		recharge_volt_mv -= 200;
-
+#endif
 	rc = fg_set_recharge_voltage(chip, recharge_volt_mv);
 	if (rc < 0) {
 		pr_err("Error in setting recharge_voltage, rc=%d\n",

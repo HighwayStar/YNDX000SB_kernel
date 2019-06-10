@@ -25,6 +25,8 @@
 #include "battery.h"
 #include "step-chg-jeita.h"
 #include "storm-watch.h"
+#include <linux/switch.h>
+static struct switch_dev invalid_charger_data;
 
 #define smblib_err(chg, fmt, ...)		\
 	pr_err("%s: %s: " fmt, chg->name,	\
@@ -1628,7 +1630,20 @@ int smblib_get_prop_batt_status(struct smb_charger *chg,
 		break;
 	case TERMINATE_CHARGE:
 	case INHIBIT_CHARGE:
+#if 1
+		rc = smblib_get_prop_batt_capacity(chg, &pval);
+		if (rc < 0) {
+			smblib_err(chg, "Couldn't get battery capacity property rc=%d\n", rc);
+		}
+		if (pval.intval == 100) {
+			val->intval = POWER_SUPPLY_STATUS_FULL;
+		} else {
+			val->intval = POWER_SUPPLY_STATUS_CHARGING;
+			return 0;
+		}
+#else
 		val->intval = POWER_SUPPLY_STATUS_FULL;
+#endif
 		break;
 	case DISABLE_CHARGE:
 		val->intval = POWER_SUPPLY_STATUS_NOT_CHARGING;
@@ -1776,6 +1791,50 @@ int smblib_get_prop_input_current_limited(struct smb_charger *chg,
 	return 0;
 }
 
+int smblib_get_prop_batt_voltage_now(struct smb_charger *chg,
+				     union power_supply_propval *val)
+{
+	int rc;
+
+	if (!chg->bms_psy)
+		return -EINVAL;
+
+	rc = power_supply_get_property(chg->bms_psy,
+				       POWER_SUPPLY_PROP_VOLTAGE_NOW, val);
+	return rc;
+}
+
+int smblib_get_prop_batt_current_now(struct smb_charger *chg,
+				     union power_supply_propval *val)
+{
+	int rc;
+
+	if (!chg->bms_psy)
+		return -EINVAL;
+
+	rc = power_supply_get_property(chg->bms_psy,
+				       POWER_SUPPLY_PROP_CURRENT_NOW, val);
+	return rc;
+}
+
+int smblib_get_prop_batt_temp(struct smb_charger *chg,
+			      union power_supply_propval *val)
+{
+	int rc;
+
+	if (!chg->bms_psy)
+		return -EINVAL;
+
+	if (chg->fake_temp > -1000) {
+		val->intval = chg->fake_temp;
+		return 0;
+	}
+
+	rc = power_supply_get_property(chg->bms_psy,
+				       POWER_SUPPLY_PROP_TEMP, val);
+	return rc;
+}
+
 int smblib_get_prop_batt_charge_done(struct smb_charger *chg,
 					union power_supply_propval *val)
 {
@@ -1857,6 +1916,16 @@ int smblib_set_prop_batt_capacity(struct smb_charger *chg,
 				  const union power_supply_propval *val)
 {
 	chg->fake_capacity = val->intval;
+
+	power_supply_changed(chg->batt_psy);
+
+	return 0;
+}
+
+int smblib_set_prop_batt_temp(struct smb_charger *chg,
+				  const union power_supply_propval *val)
+{
+	chg->fake_temp = val->intval;
 
 	power_supply_changed(chg->batt_psy);
 
@@ -2070,12 +2139,22 @@ int smblib_disable_hw_jeita(struct smb_charger *chg, bool disable)
 	/*
 	 * Disable h/w base JEITA compensation if s/w JEITA is enabled
 	 */
+#if 0
+	mask = JEITA_EN_HARDLIMIT_BIT
+		| JEITA_EN_COLD_SL_FCV_BIT
+		| JEITA_EN_HOT_SL_FCV_BIT
+		| JEITA_EN_HOT_SL_CCC_BIT
+		| JEITA_EN_COLD_SL_CCC_BIT,
+	rc = smblib_masked_write(chg, JEITA_EN_CFG_REG, mask,
+			disable ? 0 : mask);
+#else
 	mask = JEITA_EN_COLD_SL_FCV_BIT
 		| JEITA_EN_HOT_SL_FCV_BIT
 		| JEITA_EN_HOT_SL_CCC_BIT
 		| JEITA_EN_COLD_SL_CCC_BIT,
 	rc = smblib_masked_write(chg, JEITA_EN_CFG_REG, mask,
 			disable ? 0 : mask);
+#endif
 	if (rc < 0) {
 		dev_err(chg->dev,
 			"Couldn't configure s/w jeita rc=%d\n",
@@ -3223,6 +3302,30 @@ irqreturn_t smblib_handle_batt_psy_changed(int irq, void *data)
 	return IRQ_HANDLED;
 }
 
+irqreturn_t smblib_handle_batt_missing_psy_changed(int irq, void *data)
+{
+	struct smb_irq_data *irq_data = data;
+	struct smb_charger *chg = irq_data->parent_data;
+	int rc;
+
+	smblib_dbg(chg, PR_INTERRUPT, "IRQ: %s\n", irq_data->name);
+
+	rc = smblib_masked_write(chg, USBIN_LOAD_CFG_REG,
+				ICL_OVERRIDE_AFTER_APSD_BIT,
+				ICL_OVERRIDE_AFTER_APSD_BIT);
+	if (rc < 0)
+		smblib_err(chg, "Couldn't override ICL rc=%d\n", rc);
+
+	rc = smblib_masked_write(chg, USBIN_CURRENT_LIMIT_CFG_REG,
+				USBIN_CURRENT_LIMIT_MASK,
+				0);
+	if (rc < 0)
+		smblib_err(chg, "Couldn't set usbin current limit rc=%d\n", rc);
+
+	power_supply_changed(chg->batt_psy);
+	return IRQ_HANDLED;
+}
+
 irqreturn_t smblib_handle_usb_psy_changed(int irq, void *data)
 {
 	struct smb_irq_data *irq_data = data;
@@ -3238,6 +3341,9 @@ irqreturn_t smblib_handle_usbin_uv(int irq, void *data)
 	struct smb_irq_data *irq_data = data;
 	struct smb_charger *chg = irq_data->parent_data;
 	struct storm_watch *wdata;
+	const struct apsd_result *apsd = smblib_get_apsd_result(chg);
+	int rc;
+	u8 stat = 0, max_pulses = 0;
 
 	smblib_dbg(chg, PR_INTERRUPT, "IRQ: %s\n", irq_data->name);
 	if (!chg->irq_info[SWITCH_POWER_OK_IRQ].irq_data)
@@ -3245,6 +3351,93 @@ irqreturn_t smblib_handle_usbin_uv(int irq, void *data)
 
 	wdata = &chg->irq_info[SWITCH_POWER_OK_IRQ].irq_data->storm_data;
 	reset_storm_count(wdata);
+
+	if (!chg->non_compliant_chg_detected &&
+			apsd->pst == POWER_SUPPLY_TYPE_USB_HVDCP) {
+		rc = smblib_read(chg, QC_CHANGE_STATUS_REG, &stat);
+		if (rc < 0)
+			smblib_err(chg,
+				"Couldn't read CHANGE_STATUS_REG rc=%d\n", rc);
+
+		if (!stat){
+			rc = smblib_masked_write(chg, HVDCP_PULSE_COUNT_MAX_REG,
+			HVDCP_PULSE_COUNT_MAX_QC2_MASK,
+			HVDCP_PULSE_COUNT_MAX_QC2_5V);
+			if (rc < 0)
+				smblib_err(chg, "Couldn't force max pulses to 5V rc=%d\n", rc);
+				rc = smblib_masked_write(chg, USBIN_OPTIONS_1_CFG_REG, HVDCP_EN_BIT, 0 );
+		}
+		if (stat & QC_5V_BIT){
+			rc = smblib_masked_write(chg, USBIN_OPTIONS_1_CFG_REG, HVDCP_EN_BIT, 0 );
+		}
+
+		rc = smblib_read(chg, HVDCP_PULSE_COUNT_MAX_REG, &max_pulses);
+		if (rc < 0)
+			smblib_err(chg,
+				"Couldn't read QC2 max pulses rc=%d\n", rc);
+
+		chg->non_compliant_chg_detected = true;
+		chg->qc2_max_pulses = (max_pulses &
+				HVDCP_PULSE_COUNT_MAX_QC2_MASK);
+
+		if (stat & QC_12V_BIT) {
+			rc = smblib_masked_write(chg, HVDCP_PULSE_COUNT_MAX_REG,
+					HVDCP_PULSE_COUNT_MAX_QC2_MASK,
+					HVDCP_PULSE_COUNT_MAX_QC2_9V);
+			if (rc < 0)
+				smblib_err(chg, "Couldn't force max pulses to 9V rc=%d\n",
+						rc);
+
+		} else if (stat & QC_9V_BIT) {
+			rc = smblib_masked_write(chg, HVDCP_PULSE_COUNT_MAX_REG,
+					HVDCP_PULSE_COUNT_MAX_QC2_MASK,
+					HVDCP_PULSE_COUNT_MAX_QC2_5V);
+			if (rc < 0)
+				smblib_err(chg, "Couldn't force max pulses to 5V rc=%d\n",
+						rc);
+
+		}
+		smblib_rerun_apsd(chg);
+	}
+	return IRQ_HANDLED;
+}
+
+void smblib_usbin_ov_set_switch_state(struct smb_charger *chg)
+{
+	int rc;
+	u8 stat;
+	bool vbus_ov;
+
+	rc = smblib_read(chg, USBIN_BASE + INT_RT_STS_OFFSET, &stat);
+	if (rc < 0) {
+		smblib_err(chg, "Couldn't read USB_INT_RT_STS rc=%d\n", rc);
+		return;
+	}
+	smblib_dbg(chg, PR_INTERRUPT, "[B]%s(%d): stat=0x%x\n", __func__, __LINE__, stat);
+
+	vbus_ov = (bool)(stat & USBIN_OV_RT_STS_BIT);
+
+	if (vbus_ov) {
+		switch_set_state((struct switch_dev *)&invalid_charger_data, 1);
+		pr_info("[B]%s(%d): set invalid charger state to 1 when %s\n", __func__, __LINE__, vbus_ov ? "over voltage" : "not over voltage");
+	} else {
+		switch_set_state((struct switch_dev *)&invalid_charger_data, 0);
+		pr_info("[B]%s(%d): set invalid charger state to 0 when %s\n", __func__, __LINE__, vbus_ov ? "over voltage" : "not over voltage");
+	}
+
+	power_supply_changed(chg->usb_psy);
+	smblib_dbg(chg, PR_INTERRUPT, "IRQ: usbin-ov %s\n", vbus_ov ? "over voltage" : "not over voltage");
+}
+
+irqreturn_t smblib_handle_usbin_ov(int irq, void *data)
+{
+	struct smb_irq_data *irq_data = data;
+	struct smb_charger *chg = irq_data->parent_data;
+
+	smblib_dbg(chg, PR_INTERRUPT, "IRQ: %s\n", irq_data->name);
+	mutex_lock(&chg->lock);
+	smblib_usbin_ov_set_switch_state(chg);
+	mutex_unlock(&chg->lock);
 	return IRQ_HANDLED;
 }
 
@@ -4035,6 +4228,17 @@ static void smblib_handle_typec_removal(struct smb_charger *chg)
 	rc = smblib_masked_write(chg, MISC_CFG_REG, TCC_DEBOUNCE_20MS_BIT, 0);
 	if (rc < 0)
 		smblib_err(chg, "Couldn't set 120mS tCC debounce rc=%d\n", rc);
+
+	if (chg->non_compliant_chg_detected) {
+		rc = smblib_masked_write(chg, HVDCP_PULSE_COUNT_MAX_REG,
+				HVDCP_PULSE_COUNT_MAX_QC2_MASK,
+				chg->qc2_max_pulses);
+		if (rc < 0)
+			smblib_err(chg, "Couldn't restore max pulses rc=%d\n",
+					rc);
+		chg->non_compliant_chg_detected = false;
+	}
+	rc = smblib_masked_write(chg, USBIN_OPTIONS_1_CFG_REG, HVDCP_EN_BIT, HVDCP_EN_BIT );
 
 	/* enable APSD CC trigger for next insertion */
 	rc = smblib_masked_write(chg, TYPE_C_CFG_REG,
@@ -4991,6 +5195,7 @@ int smblib_init(struct smb_charger *chg)
 	INIT_DELAYED_WORK(&chg->uusb_otg_work, smblib_uusb_otg_work);
 	INIT_DELAYED_WORK(&chg->bb_removal_work, smblib_bb_removal_work);
 	chg->fake_capacity = -EINVAL;
+	chg->fake_temp = -1000;
 	chg->fake_input_current_limited = -EINVAL;
 
 	switch (chg->mode) {
@@ -5034,6 +5239,13 @@ int smblib_init(struct smb_charger *chg)
 		return -EINVAL;
 	}
 
+	invalid_charger_data.name = "invalid_charger";
+	invalid_charger_data.index = 0;
+	invalid_charger_data.state = 0;
+	rc = switch_dev_register(&invalid_charger_data);
+
+	if (rc < 0)
+		pr_err("[B]%s(%d): switch_dev_register() error(%d)\n", __func__, __LINE__, rc);
 	return rc;
 }
 
@@ -5066,6 +5278,7 @@ int smblib_deinit(struct smb_charger *chg)
 	}
 
 	smblib_iio_deinit(chg);
+	switch_dev_unregister(&invalid_charger_data);
 
 	return 0;
 }
