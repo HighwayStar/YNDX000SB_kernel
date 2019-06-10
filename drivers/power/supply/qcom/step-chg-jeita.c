@@ -17,7 +17,7 @@
 #include <linux/slab.h>
 #include <linux/pmic-voter.h>
 #include "step-chg-jeita.h"
-
+#include "smb-lib.h"
 #define MAX_STEP_CHG_ENTRIES	8
 #define STEP_CHG_VOTER		"STEP_CHG_VOTER"
 #define JEITA_VOTER		"JEITA_VOTER"
@@ -60,6 +60,7 @@ struct step_chg_info {
 	ktime_t			jeita_last_update_time;
 	bool			step_chg_enable;
 	bool			sw_jeita_enable;
+	bool			is_call_state;
 	int			jeita_fcc_index;
 	int			jeita_fv_index;
 	int			step_index;
@@ -121,10 +122,17 @@ static struct jeita_fcc_cfg jeita_fcc_config = {
 	.hysteresis	= 10, /* 1degC hysteresis */
 	.fcc_cfg	= {
 		/* TEMP_LOW	TEMP_HIGH	FCC */
+#if 1
+		{0,		100,		575000},
+		{101,		150,		1475000},
+		{151,		450,		2075000},
+		{451,		590,		1475000},
+#else
 		{0,		100,		600000},
 		{101,		200,		2000000},
 		{201,		450,		3000000},
 		{451,		550,		600000},
+#endif
 	},
 };
 
@@ -134,9 +142,15 @@ static struct jeita_fv_cfg jeita_fv_config = {
 	.hysteresis	= 10, /* 1degC hysteresis */
 	.fv_cfg		= {
 		/* TEMP_LOW	TEMP_HIGH	FCC */
+#if 1
+		{0,		100,		4400000},
+		{101,		450,		4400000},
+		{451,		590,		4100000},
+#else
 		{0,		100,		4200000},
 		{101,		450,		4400000},
 		{451,		550,		4200000},
+#endif
 	},
 };
 
@@ -334,7 +348,24 @@ static int handle_jeita(struct step_chg_info *chip)
 	if (!chip->fv_votable)
 		goto update_time;
 
+	{
+		union power_supply_propval pval_call = {0, };
+		rc = power_supply_get_property(chip->batt_psy, POWER_SUPPLY_PROP_IS_CALL_STATE, &pval_call);
+		if (rc < 0)
+			chip->is_call_state = 0;
+		else
+			chip->is_call_state = pval_call.intval;
+
+		if (chip->is_call_state) {
+			fv_uv = 4000000;
+			pr_debug("[B]%s(%d): chip->is_call_state=%d\n", __func__, __LINE__, chip->is_call_state);
+		} else {
+			pr_debug("[B]%s(%d): chip->is_call_state=%d\n", __func__, __LINE__, chip->is_call_state);
+		}
+	}
+
 	vote(chip->fv_votable, JEITA_VOTER, true, fv_uv);
+	vote(chip->fv_votable, BATT_PROFILE_VOTER, false, 0);
 
 	pr_debug("%s = %d FCC = %duA FV = %duV\n",
 		step_chg_config.prop_name, pval.intval, fcc_ua, fv_uv);

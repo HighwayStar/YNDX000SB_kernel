@@ -25,6 +25,8 @@
 #include "battery.h"
 #include "step-chg-jeita.h"
 #include "storm-watch.h"
+#include <linux/switch.h>
+static struct switch_dev invalid_charger_data;
 
 #define smblib_err(chg, fmt, ...)		\
 	pr_err("%s: %s: " fmt, chg->name,	\
@@ -1625,7 +1627,20 @@ int smblib_get_prop_batt_status(struct smb_charger *chg,
 		break;
 	case TERMINATE_CHARGE:
 	case INHIBIT_CHARGE:
+#if 1
+		rc = smblib_get_prop_batt_capacity(chg, &pval);
+		if (rc < 0) {
+			smblib_err(chg, "Couldn't get battery capacity property rc=%d\n", rc);
+		}
+		if (pval.intval == 100) {
+			val->intval = POWER_SUPPLY_STATUS_FULL;
+		} else {
+			val->intval = POWER_SUPPLY_STATUS_CHARGING;
+			return 0;
+		}
+#else
 		val->intval = POWER_SUPPLY_STATUS_FULL;
+#endif
 		break;
 	case DISABLE_CHARGE:
 		val->intval = POWER_SUPPLY_STATUS_NOT_CHARGING;
@@ -1806,6 +1821,11 @@ int smblib_get_prop_batt_temp(struct smb_charger *chg,
 	if (!chg->bms_psy)
 		return -EINVAL;
 
+	if (chg->fake_temp > -1000) {
+		val->intval = chg->fake_temp;
+		return 0;
+	}
+
 	rc = power_supply_get_property(chg->bms_psy,
 				       POWER_SUPPLY_PROP_TEMP, val);
 	return rc;
@@ -1891,6 +1911,16 @@ int smblib_set_prop_batt_capacity(struct smb_charger *chg,
 				  const union power_supply_propval *val)
 {
 	chg->fake_capacity = val->intval;
+
+	power_supply_changed(chg->batt_psy);
+
+	return 0;
+}
+
+int smblib_set_prop_batt_temp(struct smb_charger *chg,
+				  const union power_supply_propval *val)
+{
+	chg->fake_temp = val->intval;
 
 	power_supply_changed(chg->batt_psy);
 
@@ -2104,12 +2134,22 @@ int smblib_disable_hw_jeita(struct smb_charger *chg, bool disable)
 	/*
 	 * Disable h/w base JEITA compensation if s/w JEITA is enabled
 	 */
+#if 0
+	mask = JEITA_EN_HARDLIMIT_BIT
+		| JEITA_EN_COLD_SL_FCV_BIT
+		| JEITA_EN_HOT_SL_FCV_BIT
+		| JEITA_EN_HOT_SL_CCC_BIT
+		| JEITA_EN_COLD_SL_CCC_BIT,
+	rc = smblib_masked_write(chg, JEITA_EN_CFG_REG, mask,
+			disable ? 0 : mask);
+#else
 	mask = JEITA_EN_COLD_SL_FCV_BIT
 		| JEITA_EN_HOT_SL_FCV_BIT
 		| JEITA_EN_HOT_SL_CCC_BIT
 		| JEITA_EN_COLD_SL_CCC_BIT,
 	rc = smblib_masked_write(chg, JEITA_EN_CFG_REG, mask,
 			disable ? 0 : mask);
+#endif
 	if (rc < 0) {
 		dev_err(chg->dev,
 			"Couldn't configure s/w jeita rc=%d\n",
@@ -3255,6 +3295,30 @@ irqreturn_t smblib_handle_batt_psy_changed(int irq, void *data)
 	return IRQ_HANDLED;
 }
 
+irqreturn_t smblib_handle_batt_missing_psy_changed(int irq, void *data)
+{
+	struct smb_irq_data *irq_data = data;
+	struct smb_charger *chg = irq_data->parent_data;
+	int rc;
+
+	smblib_dbg(chg, PR_INTERRUPT, "IRQ: %s\n", irq_data->name);
+
+	rc = smblib_masked_write(chg, USBIN_LOAD_CFG_REG,
+				ICL_OVERRIDE_AFTER_APSD_BIT,
+				ICL_OVERRIDE_AFTER_APSD_BIT);
+	if (rc < 0)
+		smblib_err(chg, "Couldn't override ICL rc=%d\n", rc);
+
+	rc = smblib_masked_write(chg, USBIN_CURRENT_LIMIT_CFG_REG,
+				USBIN_CURRENT_LIMIT_MASK,
+				0);
+	if (rc < 0)
+		smblib_err(chg, "Couldn't set usbin current limit rc=%d\n", rc);
+
+	power_supply_changed(chg->batt_psy);
+	return IRQ_HANDLED;
+}
+
 irqreturn_t smblib_handle_usb_psy_changed(int irq, void *data)
 {
 	struct smb_irq_data *irq_data = data;
@@ -3270,6 +3334,9 @@ irqreturn_t smblib_handle_usbin_uv(int irq, void *data)
 	struct smb_irq_data *irq_data = data;
 	struct smb_charger *chg = irq_data->parent_data;
 	struct storm_watch *wdata;
+	const struct apsd_result *apsd = smblib_get_apsd_result(chg);
+	int rc;
+	u8 stat = 0, max_pulses = 0;
 
 	smblib_dbg(chg, PR_INTERRUPT, "IRQ: %s\n", irq_data->name);
 	if (!chg->irq_info[SWITCH_POWER_OK_IRQ].irq_data)
@@ -3277,6 +3344,93 @@ irqreturn_t smblib_handle_usbin_uv(int irq, void *data)
 
 	wdata = &chg->irq_info[SWITCH_POWER_OK_IRQ].irq_data->storm_data;
 	reset_storm_count(wdata);
+
+	if (!chg->non_compliant_chg_detected &&
+			apsd->pst == POWER_SUPPLY_TYPE_USB_HVDCP) {
+		rc = smblib_read(chg, QC_CHANGE_STATUS_REG, &stat);
+		if (rc < 0)
+			smblib_err(chg,
+				"Couldn't read CHANGE_STATUS_REG rc=%d\n", rc);
+
+		if (!stat){
+			rc = smblib_masked_write(chg, HVDCP_PULSE_COUNT_MAX_REG,
+			HVDCP_PULSE_COUNT_MAX_QC2_MASK,
+			HVDCP_PULSE_COUNT_MAX_QC2_5V);
+			if (rc < 0)
+				smblib_err(chg, "Couldn't force max pulses to 5V rc=%d\n", rc);
+				rc = smblib_masked_write(chg, USBIN_OPTIONS_1_CFG_REG, HVDCP_EN_BIT, 0 );
+		}
+		if (stat & QC_5V_BIT){
+			rc = smblib_masked_write(chg, USBIN_OPTIONS_1_CFG_REG, HVDCP_EN_BIT, 0 );
+		}
+
+		rc = smblib_read(chg, HVDCP_PULSE_COUNT_MAX_REG, &max_pulses);
+		if (rc < 0)
+			smblib_err(chg,
+				"Couldn't read QC2 max pulses rc=%d\n", rc);
+
+		chg->non_compliant_chg_detected = true;
+		chg->qc2_max_pulses = (max_pulses &
+				HVDCP_PULSE_COUNT_MAX_QC2_MASK);
+
+		if (stat & QC_12V_BIT) {
+			rc = smblib_masked_write(chg, HVDCP_PULSE_COUNT_MAX_REG,
+					HVDCP_PULSE_COUNT_MAX_QC2_MASK,
+					HVDCP_PULSE_COUNT_MAX_QC2_9V);
+			if (rc < 0)
+				smblib_err(chg, "Couldn't force max pulses to 9V rc=%d\n",
+						rc);
+
+		} else if (stat & QC_9V_BIT) {
+			rc = smblib_masked_write(chg, HVDCP_PULSE_COUNT_MAX_REG,
+					HVDCP_PULSE_COUNT_MAX_QC2_MASK,
+					HVDCP_PULSE_COUNT_MAX_QC2_5V);
+			if (rc < 0)
+				smblib_err(chg, "Couldn't force max pulses to 5V rc=%d\n",
+						rc);
+
+		}
+		smblib_rerun_apsd(chg);
+	}
+	return IRQ_HANDLED;
+}
+
+void smblib_usbin_ov_set_switch_state(struct smb_charger *chg)
+{
+	int rc;
+	u8 stat;
+	bool vbus_ov;
+
+	rc = smblib_read(chg, USBIN_BASE + INT_RT_STS_OFFSET, &stat);
+	if (rc < 0) {
+		smblib_err(chg, "Couldn't read USB_INT_RT_STS rc=%d\n", rc);
+		return;
+	}
+	smblib_dbg(chg, PR_INTERRUPT, "[B]%s(%d): stat=0x%x\n", __func__, __LINE__, stat);
+
+	vbus_ov = (bool)(stat & USBIN_OV_RT_STS_BIT);
+
+	if (vbus_ov) {
+		switch_set_state((struct switch_dev *)&invalid_charger_data, 1);
+		pr_info("[B]%s(%d): set invalid charger state to 1 when %s\n", __func__, __LINE__, vbus_ov ? "over voltage" : "not over voltage");
+	} else {
+		switch_set_state((struct switch_dev *)&invalid_charger_data, 0);
+		pr_info("[B]%s(%d): set invalid charger state to 0 when %s\n", __func__, __LINE__, vbus_ov ? "over voltage" : "not over voltage");
+	}
+
+	power_supply_changed(chg->usb_psy);
+	smblib_dbg(chg, PR_INTERRUPT, "IRQ: usbin-ov %s\n", vbus_ov ? "over voltage" : "not over voltage");
+}
+
+irqreturn_t smblib_handle_usbin_ov(int irq, void *data)
+{
+	struct smb_irq_data *irq_data = data;
+	struct smb_charger *chg = irq_data->parent_data;
+
+	smblib_dbg(chg, PR_INTERRUPT, "IRQ: %s\n", irq_data->name);
+	mutex_lock(&chg->lock);
+	smblib_usbin_ov_set_switch_state(chg);
+	mutex_unlock(&chg->lock);
 	return IRQ_HANDLED;
 }
 
@@ -3796,8 +3950,165 @@ irqreturn_t smblib_handle_usb_source_change(int irq, void *data)
 	return IRQ_HANDLED;
 }
 
+static int typec_try_sink(struct smb_charger *chg)
+{
+	union power_supply_propval val;
+	bool debounce_done, vbus_detected, sink;
+	u8 stat;
+	int exit_mode = ATTACHED_SRC, rc;
+
+	/* ignore typec interrupt while try.snk WIP */
+	chg->try_sink_active = true;
+
+	/* force SNK mode */
+	val.intval = POWER_SUPPLY_TYPEC_PR_SINK;
+	rc = smblib_set_prop_typec_power_role(chg, &val);
+	if (rc < 0) {
+		smblib_err(chg, "Couldn't set UFP mode rc=%d\n", rc);
+		goto try_sink_exit;
+	}
+
+	/* reduce Tccdebounce time to ~20ms */
+	rc = smblib_masked_write(chg, MISC_CFG_REG,
+			TCC_DEBOUNCE_20MS_BIT, TCC_DEBOUNCE_20MS_BIT);
+	if (rc < 0) {
+		smblib_err(chg, "Couldn't set MISC_CFG_REG rc=%d\n", rc);
+		goto try_sink_exit;
+	}
+
+	/*
+	 * give opportunity to the other side to be a SRC,
+	 * for tDRPTRY + Tccdebounce time
+	 */
+	msleep(100);
+
+	rc = smblib_read(chg, TYPE_C_STATUS_4_REG, &stat);
+	if (rc < 0) {
+		smblib_err(chg, "Couldn't read TYPE_C_STATUS_4 rc=%d\n",
+				rc);
+		goto try_sink_exit;
+	}
+
+	debounce_done = stat & TYPEC_DEBOUNCE_DONE_STATUS_BIT;
+
+	if (!debounce_done)
+		/*
+		 * The other side didn't switch to source, either it
+		 * is an adamant sink or is removed go back to showing Rp
+		 */
+		goto try_wait_src;
+
+	/*
+	 * We are in force sink mode and the other side has switched to
+	 * showing Rp. Config DRP in case the other side removes Rp so we
+	 * can quickly (20ms) switch to showing our Rp. Note that the spec
+	 * needs us to show Rp for 80mS while the drp DFP residency is just
+	 * 54mS. But 54mS is plenty time for us to react and force Rp for
+	 * the remaining 26mS.
+	 */
+	val.intval = POWER_SUPPLY_TYPEC_PR_DUAL;
+	rc = smblib_set_prop_typec_power_role(chg, &val);
+	if (rc < 0) {
+		smblib_err(chg, "Couldn't set DFP mode rc=%d\n",
+				rc);
+		goto try_sink_exit;
+	}
+
+	/*
+	 * while other side is Rp, wait for VBUS from it; exit if other side
+	 * removes Rp
+	 */
+	do {
+		rc = smblib_read(chg, TYPE_C_STATUS_4_REG, &stat);
+		if (rc < 0) {
+			smblib_err(chg, "Couldn't read TYPE_C_STATUS_4 rc=%d\n",
+					rc);
+			goto try_sink_exit;
+		}
+
+		debounce_done = stat & TYPEC_DEBOUNCE_DONE_STATUS_BIT;
+		vbus_detected = stat & TYPEC_VBUS_STATUS_BIT;
+
+		/* Successfully transitioned to ATTACHED.SNK */
+		if (vbus_detected && debounce_done) {
+			exit_mode = ATTACHED_SINK;
+			goto try_sink_exit;
+		}
+
+		/*
+		 * Ensure sink since drp may put us in source if other
+		 * side switches back to Rd
+		 */
+		sink = !(stat &  UFP_DFP_MODE_STATUS_BIT);
+
+		usleep_range(1000, 2000);
+	} while (debounce_done && sink);
+
+try_wait_src:
+	/*
+	 * Transition to trywait.SRC state. check if other side still wants
+	 * to be SNK or has been removed.
+	 */
+	val.intval = POWER_SUPPLY_TYPEC_PR_SOURCE;
+	rc = smblib_set_prop_typec_power_role(chg, &val);
+	if (rc < 0) {
+		smblib_err(chg, "Couldn't set UFP mode rc=%d\n", rc);
+		goto try_sink_exit;
+	}
+
+	/* Need to be in this state for tDRPTRY time, 75ms~150ms */
+	msleep(80);
+
+	rc = smblib_read(chg, TYPE_C_STATUS_4_REG, &stat);
+	if (rc < 0) {
+		smblib_err(chg, "Couldn't read TYPE_C_STATUS_4 rc=%d\n", rc);
+		goto try_sink_exit;
+	}
+
+	debounce_done = stat & TYPEC_DEBOUNCE_DONE_STATUS_BIT;
+
+	if (debounce_done)
+		/* the other side wants to be a sink */
+		exit_mode = ATTACHED_SRC;
+	else
+		/* the other side is detached */
+		exit_mode = UNATTACHED_SINK;
+
+try_sink_exit:
+	/* release forcing of SRC/SNK mode */
+	val.intval = POWER_SUPPLY_TYPEC_PR_DUAL;
+	rc = smblib_set_prop_typec_power_role(chg, &val);
+	if (rc < 0)
+		smblib_err(chg, "Couldn't set DFP mode rc=%d\n", rc);
+
+	/* revert Tccdebounce time back to ~120ms */
+	rc = smblib_masked_write(chg, MISC_CFG_REG, TCC_DEBOUNCE_20MS_BIT, 0);
+	if (rc < 0)
+		smblib_err(chg, "Couldn't set MISC_CFG_REG rc=%d\n", rc);
+
+	chg->try_sink_active = false;
+
+	return exit_mode;
+}
+
 static void typec_sink_insertion(struct smb_charger *chg)
 {
+	int exit_mode;
+
+	/*
+	 * Try.SNK entry status - ATTACHWAIT.SRC state and detected Rd-open
+	 * or RD-Ra for TccDebounce time.
+	 */
+
+	if (*chg->try_sink_enabled) {
+		exit_mode = typec_try_sink(chg);
+
+		if (exit_mode != ATTACHED_SRC) {
+			smblib_usb_typec_change(chg);
+			return;
+		}
+	}
+
 	/* when a sink is inserted we should not wait on hvdcp timeout to
 	 * enable pd
 	 */
@@ -3895,6 +4206,17 @@ static void smblib_handle_typec_removal(struct smb_charger *chg)
 	rc = smblib_masked_write(chg, MISC_CFG_REG, TCC_DEBOUNCE_20MS_BIT, 0);
 	if (rc < 0)
 		smblib_err(chg, "Couldn't set 120mS tCC debounce rc=%d\n", rc);
+
+	if (chg->non_compliant_chg_detected) {
+		rc = smblib_masked_write(chg, HVDCP_PULSE_COUNT_MAX_REG,
+				HVDCP_PULSE_COUNT_MAX_QC2_MASK,
+				chg->qc2_max_pulses);
+		if (rc < 0)
+			smblib_err(chg, "Couldn't restore max pulses rc=%d\n",
+					rc);
+		chg->non_compliant_chg_detected = false;
+	}
+	rc = smblib_masked_write(chg, USBIN_OPTIONS_1_CFG_REG, HVDCP_EN_BIT, HVDCP_EN_BIT );
 
 	/* enable APSD CC trigger for next insertion */
 	rc = smblib_masked_write(chg, TYPE_C_CFG_REG,
@@ -4056,7 +4378,7 @@ static void smblib_handle_typec_cc_state_change(struct smb_charger *chg)
 				smblib_typec_mode_name[chg->typec_mode]);
 }
 
-static void smblib_usb_typec_change(struct smb_charger *chg)
+void smblib_usb_typec_change(struct smb_charger *chg)
 {
 	int rc;
 
@@ -4092,7 +4414,8 @@ irqreturn_t smblib_handle_usb_typec_change(int irq, void *data)
 		return IRQ_HANDLED;
 	}
 
-	if (chg->cc2_detach_wa_active || chg->typec_en_dis_active) {
+	if (chg->cc2_detach_wa_active || chg->typec_en_dis_active ||
+					 chg->try_sink_active) {
 		smblib_dbg(chg, PR_INTERRUPT, "Ignoring since %s active\n",
 			chg->cc2_detach_wa_active ?
 			"cc2_detach_wa" : "typec_en_dis");
@@ -4833,6 +5156,7 @@ int smblib_init(struct smb_charger *chg)
 	INIT_DELAYED_WORK(&chg->uusb_otg_work, smblib_uusb_otg_work);
 	INIT_DELAYED_WORK(&chg->bb_removal_work, smblib_bb_removal_work);
 	chg->fake_capacity = -EINVAL;
+	chg->fake_temp = -1000;
 	chg->fake_input_current_limited = -EINVAL;
 
 	switch (chg->mode) {
@@ -4876,6 +5200,13 @@ int smblib_init(struct smb_charger *chg)
 		return -EINVAL;
 	}
 
+	invalid_charger_data.name = "invalid_charger";
+	invalid_charger_data.index = 0;
+	invalid_charger_data.state = 0;
+	rc = switch_dev_register(&invalid_charger_data);
+
+	if (rc < 0)
+		pr_err("[B]%s(%d): switch_dev_register() error(%d)\n", __func__, __LINE__, rc);
 	return rc;
 }
 
@@ -4908,6 +5239,7 @@ int smblib_deinit(struct smb_charger *chg)
 	}
 
 	smblib_iio_deinit(chg);
+	switch_dev_unregister(&invalid_charger_data);
 
 	return 0;
 }

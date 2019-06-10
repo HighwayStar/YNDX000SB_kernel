@@ -188,6 +188,11 @@ static int __weak_chg_icl_ua = 500000;
 module_param_named(
 	weak_chg_icl_ua, __weak_chg_icl_ua, int, S_IRUSR | S_IWUSR);
 
+static int __try_sink_enabled = 1;
+module_param_named(
+	try_sink_enabled, __try_sink_enabled, int, 0600
+);
+
 #define MICRO_1P5A		1500000
 #define MICRO_P1A		100000
 #define OTG_DEFAULT_DEGLITCH_TIME_MS	50
@@ -928,6 +933,7 @@ static enum power_supply_property smb2_batt_props[] = {
 	POWER_SUPPLY_PROP_RERUN_AICL,
 	POWER_SUPPLY_PROP_DP_DM,
 	POWER_SUPPLY_PROP_CHARGE_COUNTER,
+	POWER_SUPPLY_PROP_IS_CALL_STATE,
 };
 
 static int smb2_batt_get_prop(struct power_supply *psy,
@@ -956,6 +962,22 @@ static int smb2_batt_get_prop(struct power_supply *psy,
 		break;
 	case POWER_SUPPLY_PROP_CAPACITY:
 		rc = smblib_get_prop_batt_capacity(chg, val);
+		{
+			if (val->intval == 0)  {
+				int rc_1 = 0;
+				union power_supply_propval pval_usb_present = {0, };
+				union power_supply_propval pval_batt_temp = {0, };
+				union power_supply_propval pval_batt_voltage = {0, };
+				rc_1 = smblib_get_prop_usb_present(chg, &pval_usb_present);
+				rc_1 = smblib_get_prop_batt_temp(chg, &pval_batt_temp);
+				rc_1 = smblib_get_prop_batt_voltage_now(chg, &pval_batt_voltage);
+				pr_info("[B]%s(%d): batt_capacity=%d, batt_temp=%d, batt_voltage=%d, usb_present=%d\n", __func__, __LINE__, val->intval, pval_batt_temp.intval, pval_batt_voltage.intval, pval_usb_present.intval);
+				if ((pval_usb_present.intval == 0) && (pval_batt_temp.intval <= (-100)) && (pval_batt_voltage.intval >= 3500000)){
+					pr_err("[B]%s(%d): battery temp toom low, hw request to set battery capacity to 1 till voltage under 3.5V\n", __func__, __LINE__);
+					val->intval = 1;
+				}
+			}
+		}
 		break;
 	case POWER_SUPPLY_PROP_SYSTEM_TEMP_LEVEL:
 		rc = smblib_get_prop_system_temp_level(chg, val);
@@ -1036,6 +1058,10 @@ static int smb2_batt_get_prop(struct power_supply *psy,
 	case POWER_SUPPLY_PROP_CHARGE_COUNTER:
 		rc = smblib_get_prop_batt_charge_counter(chg, val);
 		break;
+	case POWER_SUPPLY_PROP_IS_CALL_STATE:
+		val->intval = chg->is_call_state;
+		pr_debug("[B]%s(%d): val->intval=%d\n", __func__, __LINE__, val->intval);
+		break;
 	default:
 		pr_err("batt power supply prop %d not supported\n", psp);
 		return -EINVAL;
@@ -1065,6 +1091,9 @@ static int smb2_batt_set_prop(struct power_supply *psy,
 		break;
 	case POWER_SUPPLY_PROP_CAPACITY:
 		rc = smblib_set_prop_batt_capacity(chg, val);
+		break;
+	case POWER_SUPPLY_PROP_TEMP:
+		rc = smblib_set_prop_batt_temp(chg, val);
 		break;
 	case POWER_SUPPLY_PROP_PARALLEL_DISABLE:
 		vote(chg->pl_disable_votable, USER_VOTER, (bool)val->intval, 0);
@@ -1130,6 +1159,19 @@ static int smb2_batt_set_prop(struct power_supply *psy,
 	case POWER_SUPPLY_PROP_INPUT_CURRENT_LIMITED:
 		rc = smblib_set_prop_input_current_limited(chg, val);
 		break;
+	case POWER_SUPPLY_PROP_IS_CALL_STATE:
+		pr_debug("[B]%s(%d): val->intval=%d\n", __func__, __LINE__, val->intval);
+		if (chg->is_call_state != (!!val->intval)) {
+			chg->is_call_state = !!val->intval;
+#if 0
+			if (chg->is_call_state) {
+				rc = smblib_set_charge_param(chg, &chg->param.fv, 4000000);
+			} else {
+				rc = smblib_set_charge_param(chg, &chg->param.fv, chg->batt_profile_fv_uv);
+			}
+#endif
+		}
+		break;
 	default:
 		rc = -EINVAL;
 	}
@@ -1144,12 +1186,16 @@ static int smb2_batt_prop_is_writeable(struct power_supply *psy,
 	case POWER_SUPPLY_PROP_INPUT_SUSPEND:
 	case POWER_SUPPLY_PROP_SYSTEM_TEMP_LEVEL:
 	case POWER_SUPPLY_PROP_CAPACITY:
+#if 0
+	case POWER_SUPPLY_PROP_TEMP:
+#endif
 	case POWER_SUPPLY_PROP_PARALLEL_DISABLE:
 	case POWER_SUPPLY_PROP_DP_DM:
 	case POWER_SUPPLY_PROP_RERUN_AICL:
 	case POWER_SUPPLY_PROP_INPUT_CURRENT_LIMITED:
 	case POWER_SUPPLY_PROP_STEP_CHARGING_ENABLED:
 	case POWER_SUPPLY_PROP_SW_JEITA_ENABLED:
+	case POWER_SUPPLY_PROP_IS_CALL_STATE:
 		return 1;
 	default:
 		break;
@@ -1925,7 +1971,11 @@ static struct smb_irq_info smb2_irqs[] = {
 	},
 	[BATT_THERM_ID_MISS_IRQ] = {
 		.name		= "bat-therm-or-id-missing",
+#if 1
+		.handler	= smblib_handle_batt_missing_psy_changed,
+#else
 		.handler	= smblib_handle_batt_psy_changed,
+#endif
 	},
 	[BATT_TERM_MISS_IRQ] = {
 		.name		= "bat-terminal-missing",
@@ -1946,7 +1996,12 @@ static struct smb_irq_info smb2_irqs[] = {
 	},
 	[USBIN_OV_IRQ] = {
 		.name		= "usbin-ov",
+#if 1
+		.handler	= smblib_handle_usbin_ov,
+		.wake		= true,
+#else
 		.handler	= smblib_handle_debug,
+#endif
 	},
 	[USBIN_PLUGIN_IRQ] = {
 		.name		= "usbin-plugin",
@@ -2228,6 +2283,7 @@ static int smb2_probe(struct platform_device *pdev)
 	chg->dev = &pdev->dev;
 	chg->param = v1_params;
 	chg->debug_mask = &__debug_mask;
+	chg->try_sink_enabled = &__try_sink_enabled;
 	chg->weak_chg_icl_ua = &__weak_chg_icl_ua;
 	chg->mode = PARALLEL_MASTER;
 	chg->irq_info = smb2_irqs;
