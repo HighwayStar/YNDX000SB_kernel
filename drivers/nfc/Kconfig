@@ -85,3 +85,16 @@ config NFC_NQ
 	  This enables the NFC driver for NQx based devices.
 	  This is for i2c connected version. NCI protocol logic
 	  resides in the usermode and it has no other NFC dependencies.
+
+config NFC_ESE_USAGE
+	tristate "NFC ESE function uasge"
+	help
+	  NFC ESE function usage.
+	  Say Y here to compile support for ESE function usage
+
+config NFC_CLOCK_INT_PLL
+	tristate "NFC XTAL clock source"
+	help
+	  NFC XTAL clock source.
+	  Say Y the internal PMIC PLL clock(BB_CLK3) is used
+	  Say N a external XTAL oscillator is used.

@@ -28,6 +28,41 @@
 #ifdef CONFIG_COMPAT
 #include <linux/compat.h>
 #endif
+#define   PFX     "[NFC][NQ]"
+#if defined( NQ_NFC_DEBUG_LOG )
+  #undef  NQ_NFC_DEBUG_LOG
+#endif
+//#define NQ_NFC_DEBUG_LOG
+
+#if defined( NQ_NFC_DEBUG_LOG )
+  #define   NFC_DBG                     dev_dbg
+  #define   NFC_MSG                     dev_info
+  #define   NFC_TRACE                   dev_info
+//#define   NFC_TRACE                   dev_err
+  #define   NFC_INFO                    dev_info
+  #define   NFC_WARN                    dev_warn
+#else
+  #define   NFC_DBG(srt,arg...)         do{/* Do Nothing */}while(0)
+  #define   NFC_MSG(srt,arg...)         do{/* Do Nothing */}while(0)
+  #define   NFC_TRACE(srt,arg...)       do{/* Do Nothing */}while(0)
+  #define   NFC_INFO(srt,arg...)        do{/* Do Nothing */}while(0)
+  #define   NFC_WARN(srt,arg...)        do{/* Do Nothing */}while(0)
+#endif
+  #define   NFC_ERR                     dev_err
+//#define   NFC_ERR_RATELIMITED         dev_err_ratelimited
+
+  #define   NFC_SLEEP_MS(ms)            msleep(ms)
+  #define   NFC_SLEEP_RANGE(ms)         usleep_range(ms*1000,(ms*1000)+100)
+
+//< 20181113 Michael Lin - introduce firmware download fail recovery mechanism
+/* To avoid recovery fail and then NFC always in download mode */
+#define   NFC_FW_DOWNLOAD_MODE
+//> 20181113 Michael Lin - introduce firmware download fail recovery mechanism
+
+#if defined( NFC_I2C_CTRL_FUNC )
+  #undef  NFC_I2C_CTRL_FUNC
+#endif
+  #define   NFC_I2C_CTRL_FUNC
 
 struct nqx_platform_data {
 	unsigned int irq_gpio;
@@ -93,6 +128,48 @@ static struct notifier_block nfcc_notifier = {
 };
 
 unsigned int	disable_ctrl;
+
+#if defined( NFC_I2C_CTRL_FUNC )
+static int nqx_i2c_read(struct nqx_dev *nqx_dev, unsigned char *buff, int size)
+{
+int vRet = 0, retry = MAX_RETRY_COUNT;
+
+	NFC_INFO( &nqx_dev->client->dev, PFX "[%s]Enter...\n", __func__ ); /* For Debug tracing */
+	do
+	{
+		vRet = i2c_master_recv( nqx_dev->client, buff, size );
+		//usleep_range( 1000, 1100 ); /* Masked for performance */
+		if( vRet == size )
+			break;
+
+		NFC_ERR( &nqx_dev->client->dev, PFX "Read retry %d\n", retry ); /* For Debug tracing */
+		usleep_range( 3000, 3100 );
+		retry--;
+	} while( retry > 0 );
+
+	return vRet;
+}
+
+static int nqx_i2c_write(struct nqx_dev *nqx_dev, unsigned char *buff, int size)
+{
+int vRet = 0, retry = MAX_RETRY_COUNT;
+
+	NFC_INFO( &nqx_dev->client->dev, PFX "[%s]Enter...\n", __func__ ); /* For Debug tracing */
+	do
+	{
+		vRet = i2c_master_send( nqx_dev->client, buff, size );
+		//usleep_range( 1000, 1100 ); /* Masked for performance */
+		if( vRet == size )
+			break;
+
+		NFC_ERR( &nqx_dev->client->dev, PFX "Write retry %d\n", retry ); /* For Debug tracing */
+		usleep_range( 3000, 3100 );
+		retry--;
+	} while( retry > 0 );
+
+	return vRet;
+}
+#endif
 
 static void nqx_init_stat(struct nqx_dev *nqx_dev)
 {
@@ -207,7 +284,11 @@ static ssize_t nfc_read(struct file *filp, char __user *buf,
 	memset(tmp, 0x00, count);
 
 	/* Read data */
+#if defined( NFC_I2C_CTRL_FUNC )
+	ret = nqx_i2c_read( nqx_dev, tmp, count );
+#else
 	ret = i2c_master_recv(nqx_dev->client, tmp, count);
+#endif
 	if (ret < 0) {
 		dev_err(&nqx_dev->client->dev,
 			"%s: i2c_master_recv returned %d\n", __func__, ret);
@@ -265,7 +346,11 @@ static ssize_t nfc_write(struct file *filp, const char __user *buf,
 		goto out;
 	}
 
+#if defined( NFC_I2C_CTRL_FUNC )
+	ret = nqx_i2c_write( nqx_dev, tmp, count );
+#else
 	ret = i2c_master_send(nqx_dev->client, tmp, count);
+#endif
 	if (ret != count) {
 		dev_dbg(&nqx_dev->client->dev,
 		"%s: failed to write %d\n", __func__, ret);
@@ -462,7 +547,9 @@ int nfc_ioctl_power_states(struct file *filp, unsigned long arg)
 		 * interrupts to avoid spurious notifications to upper
 		 * layers.
 		 */
+	#if !defined( NFC_FW_DOWNLOAD_MODE )
 		nqx_disable_irq(nqx_dev);
+	#endif
 		dev_dbg(&nqx_dev->client->dev,
 			"gpio_set_value disable: %s: info: %p\n",
 			__func__, nqx_dev);
@@ -510,6 +597,10 @@ int nfc_ioctl_power_states(struct file *filp, unsigned long arg)
 				return -EBUSY; /* Device or resource busy */
 			}
 		}
+	#if defined( NFC_FW_DOWNLOAD_MODE )
+	/* Enable IRQ while upgrade FW. To avoid recovery fail and then NFC always in download mode */
+		nqx_enable_irq( nqx_dev );
+	#endif
 		gpio_set_value(nqx_dev->en_gpio, 1);
 		msleep(20);
 		if (gpio_is_valid(nqx_dev->firm_gpio))
@@ -643,7 +734,10 @@ static int nfcc_hw_check(struct i2c_client *client, struct nqx_dev *nqx_dev)
 	unsigned char nci_reset_rsp[6];
 	unsigned char init_rsp_len = 0;
 	unsigned int enable_gpio = nqx_dev->en_gpio;
+
 	/* making sure that the NFCC starts in a clean state. */
+	gpio_set_value(enable_gpio, 1);/* HPD : Enable*/
+	msleep(20);
 	gpio_set_value(enable_gpio, 0);/* ULPM: Disable */
 	/* hardware dependent delay */
 	msleep(20);
@@ -652,8 +746,13 @@ static int nfcc_hw_check(struct i2c_client *client, struct nqx_dev *nqx_dev)
 	msleep(20);
 
 	/* send NCI CORE RESET CMD with Keep Config parameters */
+#if defined( NFC_I2C_CTRL_FUNC )
+	ret = nqx_i2c_write( nqx_dev, raw_nci_reset_cmd,
+		sizeof( raw_nci_reset_cmd ));
+#else
 	ret = i2c_master_send(client, raw_nci_reset_cmd,
 						sizeof(raw_nci_reset_cmd));
+#endif
 	if (ret < 0) {
 		dev_err(&client->dev,
 		"%s: - i2c_master_send Error\n", __func__);
@@ -663,8 +762,13 @@ static int nfcc_hw_check(struct i2c_client *client, struct nqx_dev *nqx_dev)
 	msleep(30);
 
 	/* Read Response of RESET command */
+#if defined( NFC_I2C_CTRL_FUNC )
+	ret = nqx_i2c_read( nqx_dev, nci_reset_rsp,
+		sizeof( nci_reset_rsp ));
+#else
 	ret = i2c_master_recv(client, nci_reset_rsp,
 		sizeof(nci_reset_rsp));
+#endif
 	dev_err(&client->dev,
 	"%s: - nq - reset cmd answer : NfcNciRx %x %x %x\n",
 	__func__, nci_reset_rsp[0],
@@ -674,8 +778,13 @@ static int nfcc_hw_check(struct i2c_client *client, struct nqx_dev *nqx_dev)
 		"%s: - i2c_master_recv Error\n", __func__);
 		goto err_nfcc_hw_check;
 	}
+#if defined( NFC_I2C_CTRL_FUNC )
+	ret = nqx_i2c_write( nqx_dev, raw_nci_init_cmd,
+		sizeof( raw_nci_init_cmd ));
+#else
 	ret = i2c_master_send(client, raw_nci_init_cmd,
 		sizeof(raw_nci_init_cmd));
+#endif
 	if (ret < 0) {
 		dev_err(&client->dev,
 		"%s: - i2c_master_send Error\n", __func__);
@@ -684,8 +793,13 @@ static int nfcc_hw_check(struct i2c_client *client, struct nqx_dev *nqx_dev)
 	/* hardware dependent delay */
 	msleep(30);
 	/* Read Response of INIT command */
+#if defined( NFC_I2C_CTRL_FUNC )
+	ret = nqx_i2c_read( nqx_dev, nci_init_rsp,
+		sizeof( nci_init_rsp ));
+#else
 	ret = i2c_master_recv(client, nci_init_rsp,
 		sizeof(nci_init_rsp));
+#endif
 	if (ret < 0) {
 		dev_err(&client->dev,
 		"%s: - i2c_master_recv Error\n", __func__);
@@ -827,6 +941,7 @@ static int nfc_parse_dt(struct device *dev, struct nqx_platform_data *pdata)
 
 	if (r)
 		return -EINVAL;
+
 	return r;
 }
 
@@ -883,6 +998,7 @@ static int nqx_probe(struct i2c_client *client,
 		r = -ENODEV;
 		goto err_free_data;
 	}
+
 	nqx_dev = kzalloc(sizeof(*nqx_dev), GFP_KERNEL);
 	if (nqx_dev == NULL) {
 		r = -ENOMEM;
@@ -1020,6 +1136,11 @@ static int nqx_probe(struct i2c_client *client,
 		goto err_ese_gpio;
 	}
 
+	gpio_set_value( platform_data->ese_gpio, 0 );
+	gpio_set_value( platform_data->firm_gpio, 0 );
+	gpio_set_value( platform_data->en_gpio, 0 );
+	msleep( 10 ); /* hardware dependent delay */
+
 	nqx_dev->en_gpio = platform_data->en_gpio;
 	nqx_dev->irq_gpio = platform_data->irq_gpio;
 	nqx_dev->firm_gpio  = platform_data->firm_gpio;
@@ -1060,8 +1181,12 @@ static int nqx_probe(struct i2c_client *client,
 	if (r) {
 		/* make sure NFCC is not enabled */
 		gpio_set_value(platform_data->en_gpio, 0);
+	#if !defined( NFC_FW_DOWNLOAD_MODE ) /* Qualcomm default */
 		/* We don't think there is hardware switch NFC OFF */
 		goto err_request_hw_check_failed;
+	#else
+	  dev_err(&client->dev, "[%s]nfcc_hw_check() some error !!\n", __func__ );
+	#endif
 	}
 
 	/* Register reboot notifier here */
