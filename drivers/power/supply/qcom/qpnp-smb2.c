@@ -983,8 +983,8 @@ static int smb2_batt_get_prop(struct power_supply *psy,
 				union power_supply_propval pval_batt_temp = {0, };
 				union power_supply_propval pval_batt_voltage = {0, };
 				rc_1 = smblib_get_prop_usb_present(chg, &pval_usb_present);
-				rc_1 = smblib_get_prop_batt_temp(chg, &pval_batt_temp);
-				rc_1 = smblib_get_prop_batt_voltage_now(chg, &pval_batt_voltage);
+				rc_1 = smblib_get_prop_from_bms(chg, POWER_SUPPLY_PROP_TEMP, &pval_batt_temp);
+				rc_1 = smblib_get_prop_from_bms(chg, POWER_SUPPLY_PROP_VOLTAGE_NOW, &pval_batt_voltage);
 				pr_info("[B]%s(%d): batt_capacity=%d, batt_temp=%d, batt_voltage=%d, usb_present=%d\n", __func__, __LINE__, val->intval, pval_batt_temp.intval, pval_batt_voltage.intval, pval_usb_present.intval);
 				if ((pval_usb_present.intval == 0) && (pval_batt_temp.intval <= (-100)) && (pval_batt_voltage.intval >= 3500000)){
 					pr_err("[B]%s(%d): battery temp toom low, hw request to set battery capacity to 1 till voltage under 3.5V\n", __func__, __LINE__);
