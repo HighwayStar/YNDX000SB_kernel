@@ -1,0 +1,115 @@
+/* Copyright (c) 2017, The Linux Foundation. All rights reserved.
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 and
+ * only version 2 as published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ */
+
+/ {
+	mtp_batterydata: qcom,battery-data {
+		#include "fg-gen3-batterydata-atl-3435mah.dtsi"
+		#include "fg-gen3-batterydata-yandexvek-3060mah.dtsi"
+		/delete-node/ qcom,ascent_3450mah;
+		/delete-node/ qcom,itech_3000mah;
+	};
+};
+
+
+
+
+&i2c_6 { /* BLSP1 QUP6 (NFC) */
+	fs16xx@34{
+		compatible="foursemi,fs16xx";
+		reg=<0x34>;
+		foursemi,fs-dev="left";
+		status="okay";
+	};
+};
+
+&i2c_4 {
+	status = "okay";
+	himax-ts@48 {
+		compatible = "himax,hxcommon";
+		reg = <0x48>;
+		interrupt-parent = <&tlmm>;
+		interrupts = <67 0x2>;
+		vcc_i2c-supply = <&pm660_l11>;
+		vdd-ana-supply = <&pm660l_l3>;
+		himax,display-coords = <0 1080 0 2160>;
+		himax,panel-coords = <0 1080 0 2160>;
+		himax,irq-gpio = <&tlmm 67 0x00>;
+		himax,rst-gpio = <&tlmm 66 0x00>;
+		report_type = <1>;
+	};
+};
+
+
+&pm660l_wled {
+	qcom,led-strings-list = [00 01];
+};
+
+&pm660_fg {
+	qcom,hold-soc-while-full;
+	qcom,fg-chg-term-current = <140>;
+	qcom,fg-cutoff-voltage = <3400>;
+	/delete-property/	qcom,fg-auto-recharge-soc;
+	/delete-property/	qcom,fg-recharge-soc-thr;
+	qcom,fg-recharge-voltage = <4320>;
+	qcom,fg-force-load-profile;
+	qcom,fg-rsense-sel = <1>;
+/*follow 80-vt310-138_b_understanding_pmi8998_fuel_gauge.pdf*/
+	qcom,battery-thermal-coefficients = [9d 50 ff];
+	qcom,fg-jeita-thresholds = <0 15 45 59>;
+};
+
+
+&sdc2_cd_on {
+	config {
+		/delete-property/ bias-pull-up;
+		bias-disable;
+	};
+};
+
+&sdhc_2 {
+	cd-gpios = <&tlmm 54 0x0>;
+};
+
+
+&mdss_dsi0 {
+	qcom,dsi-pref-prim-pan = <&dsi_hx83112a_truly_1080p_video>;
+	pinctrl-0 = <&mdss_dsi_active &mdss_te_active &mdss_id_active>;
+	pinctrl-1 = <&mdss_dsi_suspend &mdss_te_suspend &mdss_id_suspend>;
+	qcom,platform-lcm-id-gpio = <&tlmm 68 0>;
+};
+
+
+&pm660l_wled {
+	qcom,led-strings-list = [00 01];
+};
+
+&dsi_hx83112a_truly_1080p_video {
+	qcom,mdss-dsi-bl-pmic-control-type = "bl_ctrl_wled";
+	qcom,mdss-dsi-bl-min-level = <1>;
+/*Modify Max backlight brightness begin*/
+	qcom,mdss-dsi-bl-max-level = <3000>;
+/*Modify Max backlight brightness end*/
+	qcom,panel-supply-entries = <&dsi_panel_pwr_supply>;
+};
+
+&pm660l_gpios {
+	/* GPIO 6 for fps poewr enable pin */
+	gpio@c500 {
+		qcom,mode = <1>;                /* Output */
+		qcom,pull = <5>;                /* No Pull */
+		qcom,vin-sel = <0>;             /* VIN1 GPIO_LV */
+		qcom,src-sel = <0>;             /* GPIO */
+		qcom,invert = <0>;              /* Invert */
+		qcom,master-en = <1>;           /* Enable GPIO */
+		status = "ok";
+	};
+};

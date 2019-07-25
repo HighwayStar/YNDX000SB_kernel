@@ -1,0 +1,187 @@
+/* Copyright (c) 2016-2017, The Linux Foundation. All rights reserved.
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 and
+ * only version 2 as published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ */
+
+&soc {
+	tlmm: pinctrl@03000000 {
+		fps	{
+			fps_int_active: fps_int_active {
+				mux {
+					pins = "gpio72";
+					function = "gpio";
+				};
+
+				config {
+					pins = "gpio72";
+					drive-strength = <8>; 
+					bias-pull-up;
+				};
+			};
+
+			fps_int_suspend: fps_int_suspend {
+				mux {
+					pins = "gpio72";
+					function = "gpio";
+				};
+
+			config {
+					pins = "gpio72";
+					drive-strength = <2>;
+					bias-pull-down;
+				};
+			};
+
+			fps_reset_active: fps_reset_active {
+				mux {
+					pins = "gpio20";
+					function = "gpio";
+				};
+
+				config {
+					pins = "gpio20";
+					drive-strength = <8>;
+					bias-pull-up;
+				};
+			};
+
+			fps_reset_suspend1: fps_reset_suspend1 {
+				mux {
+					pins = "gpio20";
+					function = "gpio";
+				};
+
+				config {
+					pins = "gpio20";
+					drive-strength = <2>;
+					bias-pull-down;
+				};
+			};
+		};
+
+		cam_tof_active: cam_tof_active {
+			/* LASER */
+			mux {
+				pins = "gpio45";
+			};
+
+			config {
+				pins = "gpio45";
+			};
+		};
+
+		cam_tof_suspend: cam_tof_suspend {
+			/* LASER */
+			mux {
+				pins = "gpio45";
+			};
+
+			config {
+				pins = "gpio45";
+			};
+		};
+
+		cam_sensor_rear_active: cam_sensor_rear_active {
+			/* RESET, STANDBY */
+			mux {
+				pins = "gpio46";
+			};
+
+			config {
+				pins = "gpio46";
+			};
+		};
+
+		cam_sensor_rear_suspend: cam_sensor_rear_suspend {
+			/* RESET, STANDBY */
+			mux {
+				pins = "gpio46";
+			};
+
+			config {
+				pins = "gpio46";
+			};
+		};
+
+
+		cam_sensor_rear2_active: cam_sensor_rear2_active {
+			/* RESET, STANDBY */
+			mux {
+				pins = "gpio48";
+			};
+
+			config {
+				pins = "gpio48";
+			};
+		};
+
+		cam_sensor_rear2_suspend: cam_sensor_rear2_suspend {
+			/* RESET, STANDBY */
+			mux {
+				pins = "gpio48";
+			};
+			config {
+				pins = "gpio48";
+			};
+		};
+
+
+		cam_sensor_front_active: cam_sensor_front_active {
+			/* RESET  VANA*/
+			mux {
+				pins = "gpio47";
+			};
+
+			config {
+				pins = "gpio47";
+			};
+		};
+
+		cam_sensor_front_suspend: cam_sensor_front_suspend {
+			/* RESET */
+			mux {
+				pins = "gpio47";
+			};
+
+			config {
+				pins = "gpio47";
+			};
+		};
+
+
+
+		mdss_id_active: mdss_id_active {
+			mux {
+				pins = "gpio68";
+				function = "gpio";
+			};
+
+			config {
+				pins = "gpio68";
+				drive-strength = <2>;
+				bias-disable = <0>;
+			};
+		};
+
+		mdss_id_suspend: mdss_id_suspend {
+			mux {
+				pins = "gpio68";
+				function = "gpio";
+			};
+
+			config {
+				pins = "gpio68";
+				drive-strength = <2>;
+				bias-disable = <0>;
+			};
+		};
+
+	};
+};

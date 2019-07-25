@@ -1,0 +1,29 @@
+/* Copyright (c) 2016-2017, The Linux Foundation. All rights reserved.
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 and
+ * only version 2 as published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ */
+
+&spmi_bus {
+	qcom,pm660@0 {
+		pm660_charger: qcom,qpnp-smb2 {
+			qcom,thermal-mitigation
+					= <2000000 1800000 1600000 1400000
+						1000000 500000>;
+			qcom,sw-jeita-enable;
+		};
+
+	};
+
+	qcom,pm660@1 {
+		pm660_haptics: qcom,haptic@c000 {
+			qcom,actuator-type = "erm";
+		};
+	};
+};
