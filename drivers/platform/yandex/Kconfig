@@ -1,0 +1,23 @@
+# Yandex configuration options
+
+config MACH_YANDEX
+	bool "Yandex device"
+	depends on ARCH_MSM
+	help
+	  Support for Yandex products
+
+config MACH_YANDEX_SDM630
+	bool "Yandex SDM 630"
+	depends on ARCH_SDM630
+	select MACH_YANDEX
+	help
+	  Support for SDM630 Yandex variants
+
+menu "Yandex board selection"
+
+config MACH_YANDEX_AMBER
+	bool "Kuntao board"
+	select MACH_YANDEX_SDM630
+	help
+	  Support for Yandex Phone (Amber)
+endmenu
