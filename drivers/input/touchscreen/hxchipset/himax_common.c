@@ -329,15 +329,16 @@ static int i_update_FW(void)
     int fullFileLength = 0;
     uint8_t ret = 0, result = 0;
 
-if(IC_TYPE == HX_83112A_SERIES_PWON)
-		{
-			ImageBuffer = i_CTPM_FW_HX83112A;
-			fullFileLength = sizeof(i_CTPM_FW_HX83112A);
-		}
-	else/*HX_83112B_SERIES_PWON*/
-		{
-			ImageBuffer = i_CTPM_FW_HX83112B;
-			fullFileLength = sizeof(i_CTPM_FW_HX83112B);
+    if(IC_TYPE == HX_83112A_SERIES_PWON)
+    {
+        ImageBuffer = i_CTPM_FW_HX83112A;
+        fullFileLength = sizeof(i_CTPM_FW_HX83112A);
+    }
+    else/*HX_83112B_SERIES_PWON*/
+    {
+        ImageBuffer = i_CTPM_FW_HX83112B;
+        fullFileLength = sizeof(i_CTPM_FW_HX83112B);
+    };
 
     I("%s: i_fullFileLength = %d\n", __func__,fullFileLength);
 
